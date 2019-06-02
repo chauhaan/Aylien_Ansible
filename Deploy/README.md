@@ -1,4 +1,4 @@
-# Prerequisite before running playbook:
+# Prerequisite before running ansible playbook:
 
 1) Provide the required input in var.yml
 
