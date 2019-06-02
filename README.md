@@ -1,6 +1,6 @@
 # Aylien_Ansible
 
-This repository contains two playbook.
+This repository contains two playbooks.
 
 1 - Create the instance on AWS and Deploy the python application.
 
