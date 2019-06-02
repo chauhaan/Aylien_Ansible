@@ -1,7 +1,0 @@
-ec2_access_key: ""
-ec2_secret_key: ""
-region: us-east-2
-vpc_id: vpc-ea34ca82
-image_id: ami-0b500ef59d8335eee
-key_name: Terraform
-instance_type: t2.micro
