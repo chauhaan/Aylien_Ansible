@@ -1,6 +1,6 @@
 # Prerequisite before running ansible playbook:
 
-1) Provide the required input in var.yml with the instance id of application server.
+1) Provide the required input in var.yml with the instance id of python application server.
 
 2) Provide the host address of server where you want to run the ansible playbook in the hosts file
 
