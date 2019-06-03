@@ -1,0 +1,175 @@
+---
+- hosts: localhost
+  vars:
+    zones: []
+  vars_files:
+    - ./var.yml
+  tasks:
+  - name: Create AMI
+    ec2_ami:
+      name: Python-Paint-Image
+      aws_access_key: "{{ec2_access_key}}"
+      aws_secret_key: "{{ec2_secret_key}}"
+      region: "{{ region }}"
+      instance_id: "{{ instance_id }}"
+      wait: yes
+      state: present
+      tags:
+        Name: Python-Paint-Image
+    register: ami
+  - name: Availability Zones
+    aws_az_facts:
+      aws_access_key: "{{ec2_access_key}}"
+      aws_secret_key: "{{ec2_secret_key}}"
+      region: "{{ region }}"
+    register: az
+  - set_fact:
+      zones: "{{ zones + [az.availability_zones[item|int].zone_name] }}"
+    with_sequence: start=0 end="{{az.availability_zones|length-1}}"
+  - name: Create Security Group
+    ec2_group:
+      name: "Paint ASG Security Group"
+      description: Paint ASG Security Group
+      vpc_id: "{{ vpc_id }}"
+      aws_access_key: "{{ ec2_access_key }}"
+      aws_secret_key: "{{ ec2_secret_key }}"
+      region: "{{ region }}"
+      rules:
+        - proto: tcp
+          ports:
+          - 8080
+          cidr_ip: 0.0.0.0/0
+          rule_desc: allow all on port 8080
+        - proto: tcp
+          ports:
+          - 8081
+          cidr_ip: 0.0.0.0/0
+          rule_desc: allow all on port 8081
+        - proto: tcp
+          ports:
+          - 22
+          cidr_ip: 0.0.0.0/0
+          rule_desc: allow all on port 22
+    register: security_group
+  - name: Create Load Balancer Security Group
+    ec2_group:
+      name: "Paint ASG LB Security Group"
+      description: Paint ASG LB Security Group
+      vpc_id: "{{ vpc_id }}"
+      aws_access_key: "{{ ec2_access_key }}"
+      aws_secret_key: "{{ ec2_secret_key }}"
+      region: "{{ region }}"
+      rules:
+        - proto: tcp
+          ports:
+          - 8080
+          cidr_ip: 0.0.0.0/0
+          rule_desc: allow all on port 8080
+        - proto: tcp
+          ports:
+          - 8081
+          cidr_ip: 0.0.0.0/0
+          rule_desc: allow all on port 8081
+    register: lb_security_group
+  - name: Create Classic Load Balancer
+    elb_classic_lb:
+      name: "Paint-ASG-CLB"
+      state: present
+      aws_access_key: "{{ec2_access_key}}"
+      aws_secret_key: "{{ec2_secret_key}}"
+      region: "{{ region }}"
+      zones: "{{ zones }}"
+      security_group_ids: [ "{{ lb_security_group.group_id }}" ]
+      listeners:
+        - protocol: tcp 
+          load_balancer_port: 8080
+          instance_port: 8080
+        - protocol: tcp
+          load_balancer_port: 8081
+          instance_port: 8081
+    register: lb
+  - name: Create Launch Config
+    ec2_lc:
+      name: "{{ asg_launch_config }}"
+      aws_access_key: "{{ec2_access_key}}"
+      aws_secret_key: "{{ec2_secret_key}}"
+      image_id: "{{ ami.image_id }}"
+      key_name: "{{ key_name }}"
+      region: "{{ region }}"
+      security_groups: "{{ security_group.group_id }}"
+      instance_type: "{{ instance_type }}"
+      assign_public_ip: yes
+  - name: Create Autoscaling Group
+    ec2_asg:
+      name: "{{ asg_name }}"
+      load_balancers: [ "{{ lb.elb.name }}" ]
+      availability_zones: "{{ zones }}"
+      launch_config_name: "{{ asg_launch_config }}"
+      min_size: "{{ min_size }}"
+      max_size: "{{ max_size }}"
+      desired_capacity: 1
+      aws_access_key: "{{ec2_access_key}}"
+      aws_secret_key: "{{ec2_secret_key}}"
+      region: "{{ region }}"
+      vpc_zone_identifier: "{{ subnets }}"
+      tags:
+        - Name: Paint Application
+  - name: Configure Scaling Policies
+    ec2_scaling_policy:
+      aws_access_key: "{{ec2_access_key}}"
+      aws_secret_key: "{{ec2_secret_key}}"
+      region: "{{ region }}"
+      name: "{{ item.name }}"
+      asg_name: "{{ asg_name }}"
+      state: present
+      adjustment_type: "{{ item.adjustment_type }}"
+      min_adjustment_step: "{{ item.min_adjustment_step }}"
+      scaling_adjustment: "{{ item.scaling_adjustment }}"
+      cooldown: "{{ item.cooldown }}"
+    with_items:
+      - name: "Increase Group Size"
+        adjustment_type: "ChangeInCapacity"
+        scaling_adjustment: +1
+        min_adjustment_step: 1
+        cooldown: 300
+      - name: "Decrease Group Size"
+        adjustment_type: "ChangeInCapacity"
+        scaling_adjustment: -1
+        min_adjustment_step: 1
+        cooldown: 300
+    register: sp_result
+  - name: Configure Metric Alarms and link to Scaling Policies
+    ec2_metric_alarm:
+      aws_access_key: "{{ec2_access_key}}"
+      aws_secret_key: "{{ec2_secret_key}}"
+      region: "{{ region }}"
+      name: "{{ item.name }}"
+      state: present
+      metric: "CPUUtilization"
+      namespace: "AWS/EC2"
+      statistic: "Average"
+      comparison: "{{ item.comparison }}"
+      threshold: "{{ item.threshold }}"
+      period: "{{ item.period }}"
+      evaluation_periods: "{{ item.evaluation_periods }}"
+      unit: "Percent"
+      dimensions:
+        AutoScalingGroupName: "Application-SG"
+      alarm_actions: "{{ item.alarm_actions }}"
+    with_items:
+      - name: "Application-SG-ScaleUp"
+        comparison: ">="
+        period: 180
+        evaluation_periods: 5
+        threshold: "{{ upper_threshold }}"
+        alarm_actions:
+          - "{{ sp_result.results[0].arn }}"
+      - name: "Application-SG-ScaleDown"
+        comparison: "<="
+        period: 360
+        evaluation_periods: 5
+        threshold: "{{ lower_threshold }}"
+        alarm_actions:
+          - "{{ sp_result.results[1].arn }}"
+  - name: Load Balancer URL
+    debug: var=lb.elb.dns_name
