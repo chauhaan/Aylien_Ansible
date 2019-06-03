@@ -1,0 +1,80 @@
+---
+- hosts: localhost
+  vars_files:
+    - ./var.yml
+  tasks:
+  - name: Create Security Group
+    ec2_group:
+      name: "Paint Security Group"
+      description: Paint Security Group
+      vpc_id: "{{ vpc_id }}"
+      aws_access_key: "{{ ec2_access_key }}"
+      aws_secret_key: "{{ ec2_secret_key }}"
+      region: "{{ region }}"
+      rules:
+        - proto: tcp
+          ports:
+          - 8080
+          cidr_ip: 0.0.0.0/0
+          rule_desc: allow all on port 8080
+        - proto: tcp
+          ports:
+          - 8081
+          cidr_ip: 0.0.0.0/0
+          rule_desc: allow all on port 8081
+        - proto: tcp
+          ports:
+          - 22
+          cidr_ip: 0.0.0.0/0
+          rule_desc: allow all on port 22
+    register: security_group
+  - name: Provision Paint Application Instance
+    ec2:
+      aws_access_key: "{{ec2_access_key}}"
+      aws_secret_key: "{{ec2_secret_key}}"
+      key_name: "{{ key_name }}"
+      instance_type: "{{ instance_type }}"
+      region: "{{ region }}"
+      image: "{{ image_id }}"
+      group_id: [ "{{ security_group.group_id }}" ]
+      count: 1
+      user_data: |
+        #!/bin/bash
+        yum install python python-setuptools* curl git -y
+        mkdir -p /var/www/python
+        curl -o /var/www/python/get-pip.py https://bootstrap.pypa.io/get-pip.py
+        python /var/www/python/get-pip.py
+        git clone https://github.com/AYLIEN/technical_challenge.git /var/www/python/paint
+        pip install -r /var/www/python/paint/app/requirements.txt
+        echo "python /var/www/python/paint/app/app.py --port 8080 --monitor 8081 &" >> /etc/rc.d/rc.local
+        chmod +x /etc/rc.d/rc.local
+        bash /etc/rc.d/rc.local
+        cat <<EOF >  /var/www/python/paint/crash_restart.sh
+        #!/bin/bash
+        curl http://127.0.0.1:8081 >/dev/null 2>&1
+        if [ \$? -eq 7 ]
+        then
+                python /var/www/python/paint/app/app.py --port 8080 --monitor 8081 &
+        fi
+        EOF
+        chmod +x /var/www/python/paint/crash_restart.sh
+        echo "* * * * * ( sleep 5 ; /var/www/python/paint/crash_restart.sh )
+        * * * * * ( sleep 10 ; /var/www/python/paint/crash_restart.sh )
+        * * * * * ( sleep 15 ; /var/www/python/paint/crash_restart.sh )
+        * * * * * ( sleep 20 ; /var/www/python/paint/crash_restart.sh )
+        * * * * * ( sleep 25 ; /var/www/python/paint/crash_restart.sh )
+        * * * * * ( sleep 30 ; /var/www/python/paint/crash_restart.sh )
+        * * * * * ( sleep 35 ; /var/www/python/paint/crash_restart.sh )
+        * * * * * ( sleep 40 ; /var/www/python/paint/crash_restart.sh )
+        * * * * * ( sleep 45 ; /var/www/python/paint/crash_restart.sh )
+        * * * * * ( sleep 50 ; /var/www/python/paint/crash_restart.sh )
+        * * * * * ( sleep 55 ; /var/www/python/paint/crash_restart.sh )" | crontab -
+      instance_tags:
+        Name: Paint Application
+      wait: yes
+    register: application
+  - name: Instance ID and IP Address
+    debug:
+      msg:
+      - "Instance ID: {{application.instances.0.id}}"
+      - "Instance IP: {{application.instances.0.public_ip}}"
